@@ -79,19 +79,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = None
         if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
+            # print("Viewpoint stack size: {}".format(len(viewpoint_stack))) -> 230 (same as number of gt images)
             viewpoint_stack2 = scene.getTrainCameras().copy()
         if (iteration < 1000):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         if (iteration >= 1000):
             if (iteration - 1000) % 200 == 0:
+                del rendered
                 rendered = []
                 # generate a 100 images using the gaussian model
-            #     for i in range(100):
-            #         view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
-            #         render_pkg = render(view_cam, gaussians, pipe, background)
-            #         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-            #         rendered.append((image, view_cam, viewspace_point_tensor, visibility_filter, radii))
-            # pipe.debug = False
+                for i in range(100):
+                    view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
+                    render_pkg = render(view_cam, gaussians, pipe, background)
+                    image = render_pkg["render"]
+                    rendered.append((image, view_cam))
+            pipe.debug = False
             if (iteration - 1000) % 200 < 100:
                 viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
             if (iteration - 1000) % 200 >= 100:
@@ -104,9 +106,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        if (iteration >= 1000) and (iteration - 1000) % 200 < 100:
-            #copy_img, copy_view = image.clone(), viewpoint_cam.clone()
-            rendered.append((image, viewpoint_cam))
+        # if (iteration >= 1000) and (iteration - 1000) % 200 < 100:
+        #     #copy_img, copy_view = image.clone(), viewpoint_cam.clone()
+        #     rendered.append((image, viewpoint_cam))
 
         # Loss
         if (iteration < 1000):
@@ -245,5 +247,6 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+
     # All done
     print("\nTraining complete.")
