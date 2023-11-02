@@ -45,10 +45,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
+    viewpoint_stack2 = None
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    for iteration in range(first_iter, opt.iterations + 1):        
+    rendered = []
+    for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -73,18 +75,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
-        if not viewpoint_stack:
+        viewpoint_cam = None
+        gt_image = None
+        if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-
+            viewpoint_stack2 = scene.getTrainCameras().copy()
+        if (iteration < 1000):
+            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        if (iteration >= 1000):
+            if (iteration - 1000) % 200 == 0:
+                rendered = []
+                # generate a 100 images using the gaussian model
+            #     for i in range(100):
+            #         view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
+            #         render_pkg = render(view_cam, gaussians, pipe, background)
+            #         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            #         rendered.append((image, view_cam, viewspace_point_tensor, visibility_filter, radii))
+            # pipe.debug = False
+            if (iteration - 1000) % 200 < 100:
+                viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            if (iteration - 1000) % 200 >= 100:
+                img_and_view = rendered.pop(randint(0, len(rendered)-1))[0:2]
+                gt_image, viewpoint_cam = img_and_view[0], img_and_view[1]
+                    
+        
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        if (iteration >= 1000) and (iteration - 1000) % 200 < 100:
+            #copy_img, copy_view = image.clone(), viewpoint_cam.clone()
+            rendered.append((image, viewpoint_cam))
 
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
+        if (iteration < 1000):
+            gt_image = viewpoint_cam.original_image.cuda()
+        if (iteration >= 1000):
+            if (iteration - 1000) % 200 < 100:
+                gt_image = viewpoint_cam.original_image.cuda()
+            if (iteration - 1000) % 200 >= 100:
+                gt_image = gt_image
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
@@ -175,8 +206,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
+                psnr_test /= len(config['cameras']) #avg psnr over all images
+                l1_test /= len(config['cameras']) #avg l1 over all images 
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
@@ -214,6 +245,5 @@ if __name__ == "__main__":
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
-
     # All done
     print("\nTraining complete.")
