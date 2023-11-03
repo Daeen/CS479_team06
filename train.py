@@ -11,7 +11,9 @@
 import gc
 import os
 import torch
+import numpy as np
 from random import randint
+from scene.cameras import Camera
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
@@ -30,6 +32,12 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
+    review_start = opt.iterations // 2
+    train_length = 900
+    review_length = 0
+    contrast_length = 100
+    freq = train_length + review_length + contrast_length
+    contrast_collection_freq = 1000
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
@@ -45,7 +53,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    viewpoint_stack2 = None
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -79,55 +86,78 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = None
         if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
-            # print("Viewpoint stack size: {}".format(len(viewpoint_stack))) -> 230 (same as number of gt images)
-        # if not viewpoint_stack2:
-        #     viewpoint_stack2 = scene.getTrainCameras().copy()
-        if (iteration < 5000):
+            train_size = len(viewpoint_stack)
+            # Set the camera constants for a given scene
+            base_viewpoint = viewpoint_stack[0]
+            base_image = base_viewpoint.original_image
+            base_FoVx, base_FoVy, base_img_w, base_img_h = base_viewpoint.FoVx, base_viewpoint.FoVy, base_viewpoint.image_width, base_viewpoint.image_height
+            base_colmapID, base_trans, base_scale, base_device = base_viewpoint.colmap_id, base_viewpoint.trans, base_viewpoint.scale, base_viewpoint.data_device
+        if (iteration < review_start):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        if (iteration >= 5000):
-            if (iteration - 5000) % 200 == 0:
-                viewpoint_stack2 = scene.getTrainCameras().copy()
-                #memory_summary = torch.cuda.memory_summary(device='cuda')
-                # torch.cuda.empty_cache()
-                # Print the memory summary
-                # print(memory_summary)
+            # print(viewpoint_cam.R, viewpoint_cam.T, viewpoint_cam.FoVx, viewpoint_cam.FoVy, viewpoint_cam.image_width, viewpoint_cam.image_height, viewpoint_cam.image_name, viewpoint_cam.colmap_id)
+        if (iteration >= review_start):
+            if (iteration - review_start) % freq == train_length // 2 or iteration == review_start:
                 rendered = []
                 # generate a 100 images using the gaussian model
                 with torch.no_grad():
-                    for i in range(100):
-                        view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
+                    for i in range(review_length):
+                        view_R, view_T = np.random.rand(3,3), np.random.rand(3)
+                        review_viewpoint = Camera(colmap_id=base_colmapID,
+                                                    R=view_R, 
+                                                    T=view_T, 
+                                                    FoVx=base_FoVx, 
+                                                    FoVy=base_FoVy, 
+                                                    image=base_image, 
+                                                    gt_alpha_mask=None, 
+                                                    image_name=None, 
+                                                    uid=0, 
+                                                    trans=base_trans, 
+                                                    scale=base_scale, 
+                                                    data_device=base_device)
                         if (iteration - 1) == debug_from:
                             pipe.debug = True
-                        render_pkg = render(view_cam, gaussians, pipe, background)
+                        render_pkg = render(review_viewpoint, gaussians, pipe, background)
                         image = render_pkg["render"]
-                        rendered.append((image, view_cam))
+                        rendered.append((image, review_viewpoint))
             pipe.debug = False
-            if (iteration - 5000) % 200 < 100:
+            if (iteration - review_start) % freq < train_length:
                 viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-            if (iteration - 5000) % 200 >= 100:
+            elif (iteration - review_start) % freq < train_length + review_length:
                 img_and_view = rendered.pop(randint(0, len(rendered)-1))[0:2]
                 gt_image, viewpoint_cam = img_and_view[0], img_and_view[1]
+            else:
+                viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+
       
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        # if (iteration >= 1000) and (iteration - 1000) % 200 < 100:
-        #     #copy_img, copy_view = image.clone(), viewpoint_cam.clone()
-        #     rendered.append((image, viewpoint_cam))
-
+        if (iteration >= review_start) and ((iteration - review_start) % contrast_collection_freq == 0):
+            contrast_renders = []
+        if (iteration >= review_start) and len(contrast_renders) < contrast_length:
+            contrast_renders.append((image.detach(), viewpoint_cam))
+        if (iteration >= review_start) and ((iteration - review_start) % freq >= train_length + review_length):
+            neg_image, viewpoint_cam = contrast_renders.pop(randint(0, len(contrast_renders)-1))
         # Loss
-        if (iteration < 5000):
+        if (iteration < review_start):
             gt_image = viewpoint_cam.original_image.cuda()
-        if (iteration >= 5000):
-            if (iteration - 5000) % 200 < 100:
+        if (iteration >= review_start):
+            if (iteration - review_start) % freq < train_length:
                 gt_image = viewpoint_cam.original_image.cuda()
-            if (iteration - 5000) % 200 >= 100:
+            elif (iteration - review_start) % freq < train_length + review_length:
                 gt_image = gt_image
+            else:
+                gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if (iteration >= review_start and (iteration - review_start) % freq >= train_length + review_length):
+            Ll1_neg = l1_loss(image, neg_image)
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) - opt.lambda_contrast*Ll1_neg
+        else:
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
+        
 
         iter_end.record()
 
