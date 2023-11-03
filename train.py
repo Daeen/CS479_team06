@@ -82,10 +82,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # print("Viewpoint stack size: {}".format(len(viewpoint_stack))) -> 230 (same as number of gt images)
         # if not viewpoint_stack2:
         #     viewpoint_stack2 = scene.getTrainCameras().copy()
-        if (iteration < 1000):
+        if (iteration < 5000):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        if (iteration >= 1000):
-            if (iteration - 1000) % 200 == 0:
+        if (iteration >= 5000):
+            if (iteration - 5000) % 200 == 0:
                 viewpoint_stack2 = scene.getTrainCameras().copy()
                 #memory_summary = torch.cuda.memory_summary(device='cuda')
                 # torch.cuda.empty_cache()
@@ -102,13 +102,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         image = render_pkg["render"]
                         rendered.append((image, view_cam))
             pipe.debug = False
-            if (iteration - 1000) % 200 < 100:
+            if (iteration - 5000) % 200 < 100:
                 viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-            if (iteration - 1000) % 200 >= 100:
+            if (iteration - 5000) % 200 >= 100:
                 img_and_view = rendered.pop(randint(0, len(rendered)-1))[0:2]
                 gt_image, viewpoint_cam = img_and_view[0], img_and_view[1]
-                    
-        
+      
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
@@ -119,12 +118,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         #     rendered.append((image, viewpoint_cam))
 
         # Loss
-        if (iteration < 1000):
+        if (iteration < 5000):
             gt_image = viewpoint_cam.original_image.cuda()
-        if (iteration >= 1000):
-            if (iteration - 1000) % 200 < 100:
+        if (iteration >= 5000):
+            if (iteration - 5000) % 200 < 100:
                 gt_image = viewpoint_cam.original_image.cuda()
-            if (iteration - 1000) % 200 >= 100:
+            if (iteration - 5000) % 200 >= 100:
                 gt_image = gt_image
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
