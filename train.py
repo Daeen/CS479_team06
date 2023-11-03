@@ -8,7 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-
+import gc
 import os
 import torch
 from random import randint
@@ -80,19 +80,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
             # print("Viewpoint stack size: {}".format(len(viewpoint_stack))) -> 230 (same as number of gt images)
+        if not viewpoint_stack2:
             viewpoint_stack2 = scene.getTrainCameras().copy()
         if (iteration < 1000):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
         if (iteration >= 1000):
             if (iteration - 1000) % 200 == 0:
-                del rendered
+                memory_summary = torch.cuda.memory_summary(device='cuda')
+                # torch.cuda.empty_cache()
+                # Print the memory summary
+                # print(memory_summary)
                 rendered = []
                 # generate a 100 images using the gaussian model
-                for i in range(100):
-                    view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
-                    render_pkg = render(view_cam, gaussians, pipe, background)
-                    image = render_pkg["render"]
-                    rendered.append((image, view_cam))
+                with torch.no_grad():
+                    for i in range(100):
+                        view_cam = viewpoint_stack2.pop(randint(0, len(viewpoint_stack2)-1))
+                        if (iteration - 1) == debug_from:
+                            pipe.debug = True
+                        render_pkg = render(view_cam, gaussians, pipe, background)
+                        image = render_pkg["render"]
+                        rendered.append((image, view_cam))
             pipe.debug = False
             if (iteration - 1000) % 200 < 100:
                 viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
