@@ -24,6 +24,8 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from scipy.spatial.transform import Rotation
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -32,12 +34,14 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
+
+    # Review and Contrast Parameters
     review_start = opt.iterations // 2
-    train_length = 900
-    review_length = 0
-    contrast_length = 100
+    train_length = 850
+    review_length = 20
+    contrast_length = 130
     freq = train_length + review_length + contrast_length
-    contrast_collection_freq = 1000
+
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
@@ -81,12 +85,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # Pick a random Camera
         viewpoint_cam = None
         gt_image = None
         if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
             train_size = len(viewpoint_stack)
+
             # Set the camera constants for a given scene
             base_viewpoint = viewpoint_stack[0]
             base_image = base_viewpoint.original_image
@@ -94,14 +98,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             base_colmapID, base_trans, base_scale, base_device = base_viewpoint.colmap_id, base_viewpoint.trans, base_viewpoint.scale, base_viewpoint.data_device
         if (iteration < review_start):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-            # print(viewpoint_cam.R, viewpoint_cam.T, viewpoint_cam.FoVx, viewpoint_cam.FoVy, viewpoint_cam.image_width, viewpoint_cam.image_height, viewpoint_cam.image_name, viewpoint_cam.colmap_id)
         if (iteration >= review_start):
+            # generate and store images using the current 3D Gaussians
             if (iteration - review_start) % freq == train_length // 2 or iteration == review_start:
                 rendered = []
-                # generate a 100 images using the gaussian model
                 with torch.no_grad():
                     for i in range(review_length):
-                        view_R, view_T = np.random.rand(3,3), np.random.rand(3)
+                        # Randomly sample camera rotation and translation
+                        view_R = Rotation.random(3).as_euler('zxy', degrees=True) / 180.
+                        view_T = np.random.rand(3)
                         review_viewpoint = Camera(colmap_id=base_colmapID,
                                                     R=view_R, 
                                                     T=view_T, 
@@ -134,12 +139,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        if (iteration >= review_start) and ((iteration - review_start) % contrast_collection_freq == 0):
+        
+        # Reset contrast images every freq iterations
+        if (iteration >= review_start) and ((iteration - review_start) % freq == 0):
             contrast_renders = []
+
+        # Store generated images as contrast images until there are 'contrast_length' contrast images
         if (iteration >= review_start) and len(contrast_renders) < contrast_length:
             contrast_renders.append((image.detach(), viewpoint_cam))
+
+        # If in contrast phase, use contrast images as the negative images
         if (iteration >= review_start) and ((iteration - review_start) % freq >= train_length + review_length):
             neg_image, viewpoint_cam = contrast_renders.pop(randint(0, len(contrast_renders)-1))
+
         # Loss
         if (iteration < review_start):
             gt_image = viewpoint_cam.original_image.cuda()
@@ -151,7 +163,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             else:
                 gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        if (iteration >= review_start and (iteration - review_start) % freq >= train_length + review_length):
+        # if in contrast phase, use contrative loss, else use regular loss
+        if (iteration >= review_start and (iteration - review_start) & freq >= train_length):
+            loss = opt.lambda_review*((1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)))
+        elif (iteration >= review_start and (iteration - review_start) % freq >= train_length + review_length):
             Ll1_neg = l1_loss(image, neg_image)
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) - opt.lambda_contrast*Ll1_neg
         else:
