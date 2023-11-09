@@ -36,11 +36,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
 
     # Review and Contrast Parameters
-    review_start = opt.iterations // 2
-    train_length = 850
-    review_length = 20
-    contrast_length = 130
+    review_start = 10000
+    train_length = 1750
+    review_length = 50
+    contrast_length = 200
     freq = train_length + review_length + contrast_length
+    final_train_length = 2000
 
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -96,9 +97,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             base_image = base_viewpoint.original_image
             base_FoVx, base_FoVy, base_img_w, base_img_h = base_viewpoint.FoVx, base_viewpoint.FoVy, base_viewpoint.image_width, base_viewpoint.image_height
             base_colmapID, base_trans, base_scale, base_device = base_viewpoint.colmap_id, base_viewpoint.trans, base_viewpoint.scale, base_viewpoint.data_device
-        if (iteration < review_start):
+        if (iteration < review_start) or (iteration >= opt.iterations - final_train_length):
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        if (iteration >= review_start):
+        elif (iteration >= review_start):
             # generate and store images using the current 3D Gaussians
             if (iteration - review_start) % freq == train_length // 2 or iteration == review_start:
                 rendered = []
@@ -141,21 +142,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         # Reset contrast images every freq iterations
-        if (iteration >= review_start) and ((iteration - review_start) % freq == 0):
+        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and ((iteration - review_start) % freq == 0):
             contrast_renders = []
 
         # Store generated images as contrast images until there are 'contrast_length' contrast images
-        if (iteration >= review_start) and len(contrast_renders) < contrast_length:
+        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and len(contrast_renders) < contrast_length:
             contrast_renders.append((image.detach(), viewpoint_cam))
 
         # If in contrast phase, use contrast images as the negative images
-        if (iteration >= review_start) and ((iteration - review_start) % freq >= train_length + review_length):
+        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and ((iteration - review_start) % freq >= train_length + review_length):
             neg_image, viewpoint_cam = contrast_renders.pop(randint(0, len(contrast_renders)-1))
 
         # Loss
-        if (iteration < review_start):
+        if (iteration < review_start) or (iteration >= opt.iterations - final_train_length):
             gt_image = viewpoint_cam.original_image.cuda()
-        if (iteration >= review_start):
+        elif (iteration >= review_start):
             if (iteration - review_start) % freq < train_length:
                 gt_image = viewpoint_cam.original_image.cuda()
             elif (iteration - review_start) % freq < train_length + review_length:
@@ -168,7 +169,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss = opt.lambda_review*((1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)))
         elif (iteration >= review_start and (iteration - review_start) % freq >= train_length + review_length):
             Ll1_neg = l1_loss(image, neg_image)
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) - opt.lambda_contrast*Ll1_neg
+            loss_pos = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss_neg = (1.0 - opt.lambda_dssim) * Ll1_neg + opt.lambda_dssim * (1.0 - ssim(image, neg_image))
+            loss = loss_pos - opt.lambda_contrast*loss_neg
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
