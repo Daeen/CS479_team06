@@ -22,6 +22,8 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from network import FixUpResNet_withMask, WarpFieldMLP
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -31,12 +33,25 @@ except ImportError:
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+
+    combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=8, kernel_size=3).cuda()
+    warp_net = WarpFieldMLP().cuda()
+
     gaussians = GaussianModel(dataset.sh_degree)
+    reflection_gaussians = GaussianModel(dataset.sh_degree)
+    
     scene = Scene(dataset, gaussians)
+    reflection_scene = Scene(dataset, reflection_gaussians)
+
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+
+    reflection_gaussians.training_setup(opt)
+    if checkpoint:
+        (model_params, first_iter) = torch.load(checkpoint)
+        reflection_gaussians.restore(model_params, opt)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -67,15 +82,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
+        reflection_gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
+            reflection_gaussians.oneupSHdegree()
 
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+            reflection_viewpoint_stack = reflection_scene.getTrainCameras().copy()
+        ind = randint(0, len(viewpoint_stack)-1)
+        viewpoint_cam = viewpoint_stack.pop(ind)
+        reflection_viewpoint_stack.pop(ind)
 
         # Render
         if (iteration - 1) == debug_from:
@@ -83,12 +103,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        render_pkg = render(viewpoint_cam, gaussians, None, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+
+        reflection_render_pkg = render(viewpoint_cam, reflection_gaussians, warp_net, pipe, bg)
+        reflection_image, reflection_viewspace_point_tensor, reflection_visibility_filter, reflection_radii = reflection_render_pkg["render"], reflection_render_pkg["viewspace_points"], reflection_render_pkg["visibility_filter"], reflection_render_pkg["radii"]
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
+        total_image = combination_net(image, reflection_image)
+
+        Ll1 = l1_loss(total_image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
 

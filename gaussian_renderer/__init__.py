@@ -15,7 +15,7 @@ from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianR
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, warp_net, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
     Render the scene. 
     
@@ -50,7 +50,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
+    if warp_net is not None:
+        means3D = warp_net(torch.tensor(viewpoint_camera.T, dtype=torch.float).cuda(), torch.tensor(viewpoint_camera.R, dtype=torch.float).cuda(), pc.get_xyz.data)
+    else:
+        means3D = pc.get_xyz
     means2D = screenspace_points
     opacity = pc.get_opacity
 

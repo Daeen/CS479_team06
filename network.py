@@ -165,23 +165,23 @@ class FixupResidualChain(nn.Module):
 class FixUpResNet_withMask(nn.Module):
     def __init__(self, in_channels, out_channels, internal_depth, blocks, kernel_size, dropout=0.0, last_activation=None):
         super(FixUpResNet_withMask, self).__init__()
-        self.mask_generator_d = MaskGenerator(in_channels // 2 ) 
-        self.mask_generator_s = MaskGenerator(in_channels // 2) 
+        self.mask_generator_d = MaskGenerator(in_channels) 
+        self.mask_generator_s = MaskGenerator(in_channels) 
 
         self.encoder_d = nn.Sequential(
-                           ConvModule(in_channels//2, internal_depth//2, ksize=kernel_size, pad=True, activation="relu", norm_layer=None, padding_mode="reflect"),
+                           ConvModule(in_channels, internal_depth, ksize=kernel_size, pad=True, activation="relu", norm_layer=None, padding_mode="reflect"),
                            nn.Dropout(dropout),
-                           FixupResidualChain(internal_depth//2, ksize=kernel_size, depth=int(blocks/4), padding_mode="reflect", dropout=dropout),
+                           FixupResidualChain(internal_depth, ksize=kernel_size, depth=int(blocks/4), padding_mode="reflect", dropout=dropout),
                        )
         self.encoder_s = nn.Sequential(
-                           ConvModule(in_channels//2, internal_depth//2, ksize=kernel_size, pad=True, activation="relu", norm_layer=None, padding_mode="reflect"),
+                           ConvModule(in_channels, internal_depth, ksize=kernel_size, pad=True, activation="relu", norm_layer=None, padding_mode="reflect"),
                            nn.Dropout(dropout),
-                           FixupResidualChain(internal_depth//2, ksize=kernel_size, depth=int(blocks/4), padding_mode="reflect", dropout=dropout),
+                           FixupResidualChain(internal_depth, ksize=kernel_size, depth=int(blocks/4), padding_mode="reflect", dropout=dropout),
                        )
 
         self.decoder = nn.Sequential(
                            FixupResidualChain(internal_depth, ksize=kernel_size, depth=int(blocks/4), padding_mode="reflect", dropout=dropout),
-                           ConvModule(internal_depth, out_channels, ksize=kernel_size, pad=True, activation=last_activation, norm_layer=None, padding_mode="reflect")
+                           ConvModule(internal_depth, out_channels, ksize=kernel_size, pad=True, activation=last_activation, norm_layer=None, padding_mode="reflect"),
                        )
 
 
@@ -194,7 +194,8 @@ class FixUpResNet_withMask(nn.Module):
         masked_specular = specular * mask_s
         diffuse_encoded = self.encoder_d(masked_diffuse)
         specular_encoded = self.encoder_s(masked_specular)
-        x_out = self.decoder(torch.cat((diffuse_encoded, specular_encoded), dim=1))
+        # x_out = self.decoder(torch.cat((diffuse_encoded, specular_encoded), dim=1))
+        x_out = self.decoder(diffuse_encoded + specular_encoded)
         return x_out
 
     def plot_histogram(self, tb_writer, path, step):
@@ -413,3 +414,24 @@ class ProgressiveCatacausticMLP(nn.Module):
         self.raw_mlp_out = self.mlp_embed(input_embed)
         self.output = (points_xyz + 0.01 * self.raw_mlp_out)* self.s + self.m
         return self.output
+    
+
+class WarpFieldMLP(nn.Module):
+    def __init__(self, ):
+        super(WarpFieldMLP, self).__init__()
+
+        self.mlp_translation = BasicMLP(3, 3, 16, 2, activate_last=False)
+        self.mlp_rotation = BasicMLP(9, 3, 16, 2, activate_last=False)
+        self.warp = BasicMLP(9, 3, 256, 4, activate_last=False)
+
+    def forward(self, translation, rotation, xyz):
+        rotation_flat = torch.flatten(rotation)
+
+        trans = self.mlp_translation(translation).expand(xyz.shape[0], 3)
+        rot = self.mlp_rotation(rotation_flat).expand(xyz.shape[0], 3)
+
+        input_cat = torch.cat((trans, rot, xyz), dim=1)
+
+        output = self.warp(input_cat)
+        return xyz + 0.01 * output
+
