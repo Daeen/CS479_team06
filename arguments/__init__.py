@@ -87,6 +87,12 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         self.random_background = False
+
+        self.comb_init = 0.0001
+        self.comb_final = 0.001
+        self.warp_init = 0.0001
+        self.warp_final = 0.001
+
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

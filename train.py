@@ -11,6 +11,7 @@
 
 import os
 import torch
+from torch.optim import Adam, SGD
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
@@ -36,6 +37,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=8, kernel_size=3).cuda()
     warp_net = WarpFieldMLP().cuda()
+
+    combination_opt = Adam(combination_net.parameters(), lr=opt.comb_final)
+    warp_opt = Adam(warp_net.parameters(), lr=opt.warp_final)
 
     gaussians = GaussianModel(dataset.sh_degree)
     reflection_gaussians = GaussianModel(dataset.sh_degree)
@@ -152,9 +156,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
-            if (iteration in checkpoint_iterations):
+                combination_opt.step()
+                combination_opt.zero_grad()
+
+                warp_opt.step()
+                warp_opt.zero_grad()
+
+            if (iteration in checkpoint_iterations) or iteration == opt.iterations:
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+                torch.save((gaussians.capture(), iteration), scene.model_path + "/reflection_chkpnt" + str(iteration) + ".pth")
+                torch.save(warp_net, scene.model_path + "/warp_chkpnt" + str(iteration) + ".pth")
+                torch.save(combination_net, scene.model_path + "/combination_chkpnt" + str(iteration) + ".pth")
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
