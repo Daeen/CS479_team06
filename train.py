@@ -144,17 +144,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
+                reflection_gaussians.max_radii2D[reflection_visibility_filter] = torch.max(reflection_gaussians.max_radii2D[reflection_visibility_filter], reflection_radii[reflection_visibility_filter])
+                reflection_gaussians.add_densification_stats(reflection_viewspace_point_tensor, reflection_visibility_filter)
+
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    reflection_gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
+                    reflection_gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+
+                reflection_gaussians.optimizer.step()
+                reflection_gaussians.optimizer.zero_grad(set_to_none = True)
 
                 combination_opt.step()
                 combination_opt.zero_grad()
