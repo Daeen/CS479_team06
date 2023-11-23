@@ -139,6 +139,7 @@ class GaussianModel:
         opacities = inverse_sigmoid(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
+        self.warped = torch.zeros(self._xyz.shape[0])
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
         self._scaling = nn.Parameter(scales.requires_grad_(True))
@@ -401,6 +402,17 @@ class GaussianModel:
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
+
+    def prune_stationary(self, warpnet, viewpoints, min_movement):
+        xyz = self.get_xyz.data.detach()
+        mask = torch.ones(xyz.shape[0], dtype=torch.bool)
+        for vp in viewpoints:
+            warp_xyz = warpnet(torch.tensor(vp.T, dtype=torch.float).cuda(), torch.tensor(vp.R, dtype=torch.float).cuda(), xyz)
+            warp_dist = (warp_xyz - xyz).pow(2).sum(1).sqrt().cpu()
+            moved = (warp_dist >= min_movement)
+            mask = torch.logical_and(mask, moved)
+
+        self.prune_points(mask)
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)

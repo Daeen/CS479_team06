@@ -355,7 +355,7 @@ class CatacausticMLP(nn.Module):
 
 
 class ProgressiveCatacausticMLP(nn.Module):
-    def __init__(self, width_param, width_embed, depth_param, depth_embed,mean, std, cam_mean, cam_std):
+    def __init__(self, width_param, width_embed, depth_param, depth_embed, mean, std, cam_mean, cam_std):
         super(ProgressiveCatacausticMLP, self).__init__()
         self.mlp_param = BasicMLP(3, 3, 16, 2, activate_last=False)
         self.mlp_embed = BasicMLP(6, 3, 256, 4, activate_last=False)
@@ -420,8 +420,8 @@ class WarpFieldMLP(nn.Module):
     def __init__(self, ):
         super(WarpFieldMLP, self).__init__()
 
-        self.mlp_translation = BasicMLP(3, 3, 16, 2, activate_last=False)
-        self.mlp_rotation = BasicMLP(9, 3, 16, 2, activate_last=False)
+        self.mlp_translation = BasicMLP(3, 3, 8, 2, activate_last=False)
+        self.mlp_rotation = BasicMLP(9, 3, 8, 2, activate_last=False)
         self.warp = BasicMLP(9, 3, 256, 4, activate_last=False)
 
     def forward(self, translation, rotation, xyz):
@@ -433,5 +433,5 @@ class WarpFieldMLP(nn.Module):
         input_cat = torch.cat((trans, rot, xyz), dim=1)
 
         output = self.warp(input_cat)
-        return xyz + 0.01 * output
+        return xyz + 0.1 * output
 

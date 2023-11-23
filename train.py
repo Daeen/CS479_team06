@@ -35,7 +35,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
 
-    combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=8, kernel_size=3).cuda()
+    combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=4, kernel_size=3).cuda()
     warp_net = WarpFieldMLP().cuda()
 
     combination_opt = Adam(combination_net.parameters(), lr=opt.comb_final)
@@ -150,7 +150,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    
+
+                if iteration > opt.reflection_densify_from_iter and iteration % opt.reflection_densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     reflection_gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    reflection_gaussians.prune_stationary(warp_net, scene.getTestCameras().copy(), 3)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
