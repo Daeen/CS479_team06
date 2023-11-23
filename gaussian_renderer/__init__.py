@@ -51,6 +51,11 @@ def render(viewpoint_camera, pc : GaussianModel, warp_net, pipe, bg_color : torc
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
     if warp_net is not None:
+        # BATCH_SIZE = 1000
+        # xyz = pc.get_xyz.data
+        # means3D = torch.zeros_like(xyz)
+        # for i, batch in enumerate(xyz.split(BATCH_SIZE)):
+        #     means3D[i*BATCH_SIZE: i*BATCH_SIZE+batch.shape[0]] = warp_net(torch.tensor(viewpoint_camera.T, dtype=torch.float).cuda(), torch.tensor(viewpoint_camera.R, dtype=torch.float).cuda(), batch)
         means3D = warp_net(torch.tensor(viewpoint_camera.T, dtype=torch.float).cuda(), torch.tensor(viewpoint_camera.R, dtype=torch.float).cuda(), pc.get_xyz.data)
     else:
         means3D = pc.get_xyz

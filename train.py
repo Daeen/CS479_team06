@@ -133,7 +133,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, reflection_scene, combination_net, warp_net, render, (pipe, background))
+            # training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, reflection_scene, combination_net, warp_net, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -221,7 +221,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 for idx, viewpoint in enumerate(config['cameras']):
-                    base_image = renderFunc(viewpoint, scene.gaussians, warp_net, *renderArgs)["render"]
+                    base_image = renderFunc(viewpoint, scene.gaussians, None, *renderArgs)["render"]
                     reflection_image = renderFunc(viewpoint, reflection_scene.gaussians, warp_net, *renderArgs)["render"]
                     image = torch.clamp(combination_net(base_image, reflection_image), 0.0, 1.0)
 
