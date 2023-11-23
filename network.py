@@ -190,10 +190,10 @@ class FixUpResNet_withMask(nn.Module):
         mask_d = self.mask_generator_d(diffuse)
         mask_s = self.mask_generator_s(specular)
 
-        masked_diffuse = diffuse * (1. - mask_s.detach())
-        masked_specular = specular * mask_s
-        # masked_diffuse = diffuse
-        # masked_specular = specular
+        # masked_diffuse = diffuse * (1. - mask_s.detach())
+        # masked_specular = specular * mask_s
+        masked_diffuse = diffuse
+        masked_specular = specular
         diffuse_encoded = self.encoder_d(masked_diffuse)
         specular_encoded = self.encoder_s(masked_specular)
         # x_out = self.decoder(torch.cat((diffuse_encoded, specular_encoded), dim=1))
