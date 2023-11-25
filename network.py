@@ -197,7 +197,7 @@ class FixUpResNet_withMask(nn.Module):
         diffuse_encoded = self.encoder_d(masked_diffuse)
         specular_encoded = self.encoder_s(masked_specular)
         # x_out = self.decoder(torch.cat((diffuse_encoded, specular_encoded), dim=1))
-        x_out = self.decoder(diffuse_encoded + specular_encoded)
+        x_out = self.decoder(diffuse_encoded + 0.1*specular_encoded)
         return x_out
 
     def plot_histogram(self, tb_writer, path, step):
@@ -419,21 +419,27 @@ class ProgressiveCatacausticMLP(nn.Module):
     
 
 class WarpFieldMLP(nn.Module):
-    def __init__(self, ):
+    def __init__(self, feat_dim):
         super(WarpFieldMLP, self).__init__()
+
+        self.feat_dim = feat_dim
 
         self.mlp_translation = BasicMLP(3, 3, 8, 2, activate_last=False)
         self.mlp_rotation = BasicMLP(9, 3, 8, 2, activate_last=False)
-        self.warp = BasicMLP(9, 3, 256, 4, activate_last=False)
+        self.warp = BasicMLP(9+feat_dim, 3, 256, 8, activate_last=False)
+        self.feat_trans = BasicMLP(9+feat_dim, 3, 256, 8, activate_last=False)
 
-    def forward(self, translation, rotation, xyz):
+    def forward(self, translation, rotation, xyz, features):
         rotation_flat = torch.flatten(rotation)
+        reshaped_feat = torch.reshape(features, (features.shape[0], self.feat_dim))
 
         trans = self.mlp_translation(translation).expand(xyz.shape[0], 3)
         rot = self.mlp_rotation(rotation_flat).expand(xyz.shape[0], 3)
 
-        input_cat = torch.cat((trans, rot, xyz), dim=1)
+        input_cat = torch.cat((trans, rot, xyz, reshaped_feat), dim=1)
 
-        output = self.warp(input_cat)
-        return xyz + 0.1 * output
+        displacement = self.warp(input_cat)
+        new_feat = self.feat_trans(input_cat)
+
+        return xyz + 0.01 * displacement, new_feat
 

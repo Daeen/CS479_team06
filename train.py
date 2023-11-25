@@ -35,12 +35,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
 
-    combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=4, kernel_size=3).cuda()
-    warp_net = WarpFieldMLP().cuda()
-
-    combination_opt = Adam(combination_net.parameters(), lr=opt.comb_final)
-    warp_opt = Adam(warp_net.parameters(), lr=opt.warp_final)
-
     gaussians = GaussianModel(dataset.sh_degree)
     reflection_gaussians = GaussianModel(dataset.sh_degree)
     
@@ -56,6 +50,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         reflection_gaussians.restore(model_params, opt)
+
+    combination_net = FixUpResNet_withMask(in_channels=3, out_channels=3, internal_depth=16, blocks=4, kernel_size=3).cuda()
+    warp_net = WarpFieldMLP(reflection_gaussians.get_features.shape[1]*reflection_gaussians.get_features.shape[2]).cuda()
+
+    combination_opt = Adam(combination_net.parameters(), lr=opt.comb_final)
+    warp_opt = Adam(warp_net.parameters(), lr=opt.warp_final)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
