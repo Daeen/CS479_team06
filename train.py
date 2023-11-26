@@ -36,8 +36,8 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    eps_r = 5.
-    eps_t = 1.
+    eps_r = 10.
+    eps_t = 5.
 
     # Review and Contrast Parameters
     review_start = 5000
@@ -64,6 +64,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     dino_feat_extractor = vit_small(patch_size=8).cuda()
     dino_feat_extractor.load_state_dict(torch.load("dino_deitsmall8_pretrain.pth"))
     dino_feat_extractor.eval()
+    for param in dino_feat_extractor.parameters():
+        param.requires_grad = False
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -151,12 +153,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 # feat_img = vgg_feat_extractor(vgg_transform(perturbed_img))
                 # feat_gt = vgg_feat_extractor(vgg_transform(gt_image))
-                with torch.no_grad():
-                    feat_img = dino_feat_extractor(perturbed_img.unsqueeze(0).cuda())
-                    feat_gt = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
-                feat_loss += l2_loss(feat_img, feat_gt)
+                feat_img = dino_feat_extractor(perturbed_img.unsqueeze(0).cuda())
+                feat_gt = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
+                feat_loss = l2_loss(feat_img, feat_gt)
+                feat_loss.backward()
 
-            loss += opt.lambda_feat*feat_loss / num_feat_views
         loss.backward()
         
 
@@ -282,7 +283,7 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
-    network_gui.init(args.ip, args.port)
+    # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
 
