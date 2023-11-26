@@ -26,7 +26,7 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from scipy.spatial.transform import Rotation
 from torchvision.models import vgg16, VGG16_Weights
-from dino.vision_transformer import *
+from vision_transformer import *
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -40,12 +40,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     eps_t = 1.
 
     # Review and Contrast Parameters
-    review_start = 6000
+    review_start = 5000
     train_length = 400
     review_length = 100
     num_feat_views = 3
     freq = train_length + review_length
-    final_train_length = 1000
+    final_train_length = 5000
 
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -125,7 +125,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
-        if iteration > review_start and (opt.iterations-iteration) > final_train_length and (iteration - review_start) & freq > train_length:
+        if iteration > review_start and (opt.iterations-iteration) > final_train_length and (iteration - review_start) % freq > train_length:
             feat_loss = 0.
             for _ in range(num_feat_views):
                 eps_z, eps_y, eps_x = eps_r*(2*torch.rand(3) - 1.0)
