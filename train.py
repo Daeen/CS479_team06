@@ -14,7 +14,7 @@ import torch
 import numpy as np
 from random import randint
 from scene.cameras import Camera
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, l2_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -25,6 +25,8 @@ from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from scipy.spatial.transform import Rotation
+from torchvision.models import vgg16, VGG16_Weights
+from dino.vision_transformer import *
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -34,14 +36,16 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
+    eps_r = 5.
+    eps_t = 1.
 
     # Review and Contrast Parameters
-    review_start = 10000
-    train_length = 1750
-    review_length = 50
-    contrast_length = 200
-    freq = train_length + review_length + contrast_length
-    final_train_length = 2000
+    review_start = 6000
+    train_length = 400
+    review_length = 100
+    num_feat_views = 3
+    freq = train_length + review_length
+    final_train_length = 1000
 
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -50,6 +54,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
+
+    # VGG feature extractor
+    # vgg_feat_extractor = vgg16(weights=VGG16_Weights.IMAGENET1K_FEATURES).features.cuda()
+    # vgg_feat_extractor.eval()
+    # vgg_transform = VGG16_Weights.IMAGENET1K_FEATURES.transforms()
+
+    # DINO feature extractor
+    dino_feat_extractor = vit_small(patch_size=8).cuda()
+    dino_feat_extractor.load_state_dict(torch.load("dino_deitsmall8_pretrain.pth"))
+    dino_feat_extractor.eval()
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -61,7 +75,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-    rendered = []
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -90,90 +103,60 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = None
         if not viewpoint_stack: # if viewpoint_stack is empty
             viewpoint_stack = scene.getTrainCameras().copy()
-            train_size = len(viewpoint_stack)
 
             # Set the camera constants for a given scene
             base_viewpoint = viewpoint_stack[0]
             base_image = base_viewpoint.original_image
             base_FoVx, base_FoVy, base_img_w, base_img_h = base_viewpoint.FoVx, base_viewpoint.FoVy, base_viewpoint.image_width, base_viewpoint.image_height
             base_colmapID, base_trans, base_scale, base_device = base_viewpoint.colmap_id, base_viewpoint.trans, base_viewpoint.scale, base_viewpoint.data_device
-        if (iteration < review_start) or (iteration >= opt.iterations - final_train_length):
-            viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        elif (iteration >= review_start):
-            # generate and store images using the current 3D Gaussians
-            if (iteration - review_start) % freq == train_length // 2 or iteration == review_start:
-                rendered = []
-                with torch.no_grad():
-                    for i in range(review_length):
-                        # Randomly sample camera rotation and translation
-                        view_R = Rotation.random(3).as_euler('zxy', degrees=True) / 180.
-                        view_T = np.random.rand(3)
-                        review_viewpoint = Camera(colmap_id=base_colmapID,
-                                                    R=view_R, 
-                                                    T=view_T, 
-                                                    FoVx=base_FoVx, 
-                                                    FoVy=base_FoVy, 
-                                                    image=base_image, 
-                                                    gt_alpha_mask=None, 
-                                                    image_name=None, 
-                                                    uid=0, 
-                                                    trans=base_trans, 
-                                                    scale=base_scale, 
-                                                    data_device=base_device)
-                        if (iteration - 1) == debug_from:
-                            pipe.debug = True
-                        render_pkg = render(review_viewpoint, gaussians, pipe, background)
-                        image = render_pkg["render"]
-                        rendered.append((image, review_viewpoint))
-            pipe.debug = False
-            if (iteration - review_start) % freq < train_length:
-                viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-            elif (iteration - review_start) % freq < train_length + review_length:
-                img_and_view = rendered.pop(randint(0, len(rendered)-1))[0:2]
-                gt_image, viewpoint_cam = img_and_view[0], img_and_view[1]
-            else:
-                viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-
+        
+        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
       
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        
-        # Reset contrast images every freq iterations
-        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and ((iteration - review_start) % freq == 0):
-            contrast_renders = []
-
-        # Store generated images as contrast images until there are 'contrast_length' contrast images
-        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and len(contrast_renders) < contrast_length:
-            contrast_renders.append((image.detach(), viewpoint_cam))
-
-        # If in contrast phase, use contrast images as the negative images
-        if (iteration >= review_start) and (iteration < opt.iterations - final_train_length) and ((iteration - review_start) % freq >= train_length + review_length):
-            neg_image, viewpoint_cam = contrast_renders.pop(randint(0, len(contrast_renders)-1))
 
         # Loss
-        if (iteration < review_start) or (iteration >= opt.iterations - final_train_length):
-            gt_image = viewpoint_cam.original_image.cuda()
-        elif (iteration >= review_start):
-            if (iteration - review_start) % freq < train_length:
-                gt_image = viewpoint_cam.original_image.cuda()
-            elif (iteration - review_start) % freq < train_length + review_length:
-                gt_image = gt_image
-            else:
-                gt_image = viewpoint_cam.original_image.cuda()
+        gt_image = viewpoint_cam.original_image.cuda()
+
         Ll1 = l1_loss(image, gt_image)
-        # if in contrast phase, use contrative loss, else use regular loss
-        if (iteration >= review_start and (iteration - review_start) & freq >= train_length):
-            loss = opt.lambda_review*((1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)))
-        elif (iteration >= review_start and (iteration - review_start) % freq >= train_length + review_length):
-            Ll1_neg = l1_loss(image, neg_image)
-            loss_pos = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-            loss_neg = (1.0 - opt.lambda_dssim) * Ll1_neg + opt.lambda_dssim * (1.0 - ssim(image, neg_image))
-            loss = loss_pos - opt.lambda_contrast*loss_neg
-        else:
-            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        if iteration > review_start and (opt.iterations-iteration) > final_train_length and (iteration - review_start) & freq > train_length:
+            feat_loss = 0.
+            for _ in range(num_feat_views):
+                eps_z, eps_y, eps_x = eps_r*(2*torch.rand(3) - 1.0)
+                rand_rot = Rotation.from_euler('zyx', [eps_z, eps_y, eps_x], degrees=True).as_matrix()
+                rand_t = eps_t*(2*np.random.rand(3) - 1.0)
+
+                new_rot = rand_rot @ viewpoint_cam.R
+                new_t = viewpoint_cam.T + rand_t 
+                perturbed_viewpoint = Camera(colmap_id=base_colmapID,
+                                                R=new_rot, 
+                                                T=new_t, 
+                                                FoVx=base_FoVx, 
+                                                FoVy=base_FoVy, 
+                                                image=base_image, 
+                                                gt_alpha_mask=None, 
+                                                image_name=None, 
+                                                uid=0, 
+                                                trans=base_trans, 
+                                                scale=base_scale, 
+                                                data_device=base_device)
+                perturbed_render_pkg = render(perturbed_viewpoint, gaussians, pipe, background)
+                perturbed_img = perturbed_render_pkg["render"]
+
+                # feat_img = vgg_feat_extractor(vgg_transform(perturbed_img))
+                # feat_gt = vgg_feat_extractor(vgg_transform(gt_image))
+                with torch.no_grad():
+                    feat_img = dino_feat_extractor(perturbed_img.unsqueeze(0).cuda())
+                    feat_gt = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
+                feat_loss += l2_loss(feat_img, feat_gt)
+
+            loss += opt.lambda_feat*feat_loss / num_feat_views
         loss.backward()
         
 
