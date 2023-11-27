@@ -27,6 +27,7 @@ from arguments import ModelParams, PipelineParams, OptimizationParams
 from scipy.spatial.transform import Rotation
 from torchvision.models import vgg16, VGG16_Weights
 from vision_transformer import *
+from math import pi
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -36,16 +37,17 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
-    eps_r = 10.
-    eps_t = 5.
+    eps_r = 3.
+    eps_t = 1.
 
     # Review and Contrast Parameters
-    review_start = 5000
-    train_length = 400
-    review_length = 100
-    num_feat_views = 3
-    freq = train_length + review_length
-    final_train_length = 5000
+    review_start = 2000
+    train_length = 90
+    feature_length = 8
+    review_length = 2
+    num_feat_views = 1
+    freq = train_length +  review_length + feature_length
+    final_train_length = 500
 
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -117,25 +119,53 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
-        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        
 
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
+        if iteration <= review_start or (opt.iterations-iteration) <= final_train_length or (iteration - review_start) % freq <= train_length + feature_length:
+            render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+            image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+            
+            gt_image = viewpoint_cam.original_image.cuda()
 
-        Ll1 = l1_loss(image, gt_image)
+            Ll1 = l1_loss(image, gt_image)
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            loss.backward()
 
         if iteration > review_start and (opt.iterations-iteration) > final_train_length and (iteration - review_start) % freq > train_length:
             feat_loss = 0.
+            feat_factor = opt.lambda_feat
+
+            view_R = viewpoint_cam.R
+            view_T = viewpoint_cam.T
+            if (iteration - review_start) % freq > train_length + feature_length:
+                feat_factor = opt.lambda_review
+                view_R = Rotation.random(3).as_euler('zxy', degrees=True) / 180. * pi
+                view_T = np.random.rand(3)
+                random_viewpoint = Camera(colmap_id=base_colmapID,
+                                            R=view_R, 
+                                            T=view_T, 
+                                            FoVx=base_FoVx, 
+                                            FoVy=base_FoVy, 
+                                            image=base_image, 
+                                            gt_alpha_mask=None, 
+                                            image_name=None, 
+                                            uid=0, 
+                                            trans=base_trans, 
+                                            scale=base_scale, 
+                                            data_device=base_device)
+                with torch.no_grad():
+                    random_render_pkg = render(random_viewpoint, gaussians, pipe, background)
+                    gt_image = random_render_pkg["render"]
+
             for _ in range(num_feat_views):
                 eps_z, eps_y, eps_x = eps_r*(2*torch.rand(3) - 1.0)
-                rand_rot = Rotation.from_euler('zyx', [eps_z, eps_y, eps_x], degrees=True).as_matrix()
+                rand_rot = Rotation.from_euler('zyx', [eps_z, eps_y, eps_x], degrees=True).as_matrix() / 180. * pi
                 rand_t = eps_t*(2*np.random.rand(3) - 1.0)
 
-                new_rot = rand_rot @ viewpoint_cam.R
-                new_t = viewpoint_cam.T + rand_t 
+                new_rot = rand_rot @ view_R
+                new_t = view_T + rand_t 
                 perturbed_viewpoint = Camera(colmap_id=base_colmapID,
                                                 R=new_rot, 
                                                 T=new_t, 
@@ -154,11 +184,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # feat_img = vgg_feat_extractor(vgg_transform(perturbed_img))
                 # feat_gt = vgg_feat_extractor(vgg_transform(gt_image))
                 feat_img = dino_feat_extractor(perturbed_img.unsqueeze(0).cuda())
-                feat_gt = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
-                feat_loss = l2_loss(feat_img, feat_gt)
+                feat_base = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
+                feat_loss = feat_factor*l2_loss(feat_img, feat_base) / num_feat_views
                 feat_loss.backward()
-
-        loss.backward()
         
 
         iter_end.record()
