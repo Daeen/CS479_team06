@@ -28,6 +28,9 @@ from scipy.spatial.transform import Rotation
 from torchvision.models import vgg16, VGG16_Weights
 from vision_transformer import *
 from math import pi
+from torchvision.transforms.functional import pil_to_tensor, to_pil_image
+from torchvision import transforms as pth_transforms
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -35,19 +38,19 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, ratio):
     first_iter = 0
-    eps_r = 3.
-    eps_t = 1.
+    eps_r = 2.
+    eps_t = 0.5
 
     # Review and Contrast Parameters
-    review_start = 2000
-    train_length = 90
-    feature_length = 8
-    review_length = 2
+    review_start = 0
+    train_length = 80
+    feature_length = 15
+    review_length = 5
     num_feat_views = 1
     freq = train_length +  review_length + feature_length
-    final_train_length = 500
+    final_train_length = 100
 
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -66,8 +69,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     dino_feat_extractor = vit_small(patch_size=8).cuda()
     dino_feat_extractor.load_state_dict(torch.load("dino_deitsmall8_pretrain.pth"))
     dino_feat_extractor.eval()
-    for param in dino_feat_extractor.parameters():
-        param.requires_grad = False
+    # for param in dino_feat_extractor.parameters():
+    #     param.requires_grad = False
+
+    # DINO preprocessing
+    transform = pth_transforms.Compose([
+        pth_transforms.Resize((480, 480)),
+        pth_transforms.ToTensor(),
+        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -106,7 +116,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         viewpoint_cam = None
         gt_image = None
         if not viewpoint_stack: # if viewpoint_stack is empty
-            viewpoint_stack = scene.getTrainCameras().copy()
+            viewpoint_stack = scene.getTrainCameras().copy()[::int(ratio)]
 
             # Set the camera constants for a given scene
             base_viewpoint = viewpoint_stack[0]
@@ -139,6 +149,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             view_R = viewpoint_cam.R
             view_T = viewpoint_cam.T
+
+            new_rot = view_R
+            new_t = view_T
             if (iteration - review_start) % freq > train_length + feature_length:
                 feat_factor = opt.lambda_review
                 view_R = Rotation.random(3).as_euler('zxy', degrees=True) / 180. * pi
@@ -155,17 +168,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                                             trans=base_trans, 
                                             scale=base_scale, 
                                             data_device=base_device)
+                eps_z, eps_y, eps_x = eps_r*(2*torch.rand(3) - 1.0)
+                rand_rot = Rotation.from_euler('zyx', [eps_z, eps_y, eps_x], degrees=True).as_matrix() / 180. * pi
+                rand_t = eps_t*(2*np.random.rand(3) - 1.0)
+                new_rot = rand_rot @ view_R
+                new_t = view_T + rand_t 
+
                 with torch.no_grad():
                     random_render_pkg = render(random_viewpoint, gaussians, pipe, background)
                     gt_image = random_render_pkg["render"]
 
             for _ in range(num_feat_views):
-                eps_z, eps_y, eps_x = eps_r*(2*torch.rand(3) - 1.0)
-                rand_rot = Rotation.from_euler('zyx', [eps_z, eps_y, eps_x], degrees=True).as_matrix() / 180. * pi
-                rand_t = eps_t*(2*np.random.rand(3) - 1.0)
-
-                new_rot = rand_rot @ view_R
-                new_t = view_T + rand_t 
                 perturbed_viewpoint = Camera(colmap_id=base_colmapID,
                                                 R=new_rot, 
                                                 T=new_t, 
@@ -181,10 +194,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 perturbed_render_pkg = render(perturbed_viewpoint, gaussians, pipe, background)
                 perturbed_img = perturbed_render_pkg["render"]
 
-                # feat_img = vgg_feat_extractor(vgg_transform(perturbed_img))
-                # feat_gt = vgg_feat_extractor(vgg_transform(gt_image))
-                feat_img = dino_feat_extractor(perturbed_img.unsqueeze(0).cuda())
-                feat_base = dino_feat_extractor(gt_image.unsqueeze(0).cuda())
+                pil_perturbed_img = transform(to_pil_image(perturbed_img))
+                w_p, h_p = pil_perturbed_img.shape[1] - pil_perturbed_img.shape[1] % 8, pil_perturbed_img.shape[2] - pil_perturbed_img.shape[2] % 8
+                pil_perturbed_img = pil_perturbed_img[:, :w_p, :h_p].unsqueeze(0)
+                
+                pil_gt_img = transform(to_pil_image(gt_image))
+                w, h = pil_gt_img.shape[1] - pil_gt_img.shape[1] % 8, pil_gt_img.shape[2] - pil_gt_img.shape[2] % 8
+                pil_gt_img = pil_gt_img[:, :w, :h].unsqueeze(0)
+
+                feat_img = dino_feat_extractor.get_last_selfattention(pil_perturbed_img.cuda())
+                feat_base = dino_feat_extractor.get_last_selfattention(pil_gt_img.cuda())
                 feat_loss = feat_factor*l2_loss(feat_img, feat_base) / num_feat_views
                 feat_loss.backward()
         
@@ -302,6 +321,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--ratio", default=1)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -313,7 +333,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     # network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.ratio)
 
     # All done
     print("\nTraining complete.")
