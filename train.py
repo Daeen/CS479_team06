@@ -8,10 +8,9 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-import gc
+
 import os
 import torch
-import numpy as np
 from random import randint
 from scene.cameras import Camera
 from utils.loss_utils import l1_loss, l2_loss, ssim
@@ -30,8 +29,6 @@ from vision_transformer import *
 from math import pi
 from torchvision.transforms.functional import pil_to_tensor, to_pil_image
 from torchvision import transforms as pth_transforms
-
-
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -40,6 +37,7 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, ratio):
     first_iter = 0
+    
     eps_r = 2.
     eps_t = 0.5
 
@@ -206,7 +204,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 feat_base = dino_feat_extractor.get_last_selfattention(pil_gt_img.cuda())
                 feat_loss = feat_factor*l2_loss(feat_img, feat_base) / num_feat_views
                 feat_loss.backward()
-        
 
         iter_end.record()
 
@@ -294,8 +291,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras']) #avg psnr over all images
-                l1_test /= len(config['cameras']) #avg l1 over all images 
+                psnr_test /= len(config['cameras'])
+                l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
