@@ -25,8 +25,8 @@ dino_feat_extractor.eval()
 for param in dino_feat_extractor.parameters():
     param.requires_grad = False
 
-img_dir = "/home/prin/gaussian-splatting/output/truck_30k_feat/test/ours_30000/renders"
-img_name = "00004.png"
+img_dir = "/"
+img_name = "#####.png"
 img_path = os.path.join(img_dir, img_name)
 img = Image.open(img_path)
 img = img.convert('RGB')
